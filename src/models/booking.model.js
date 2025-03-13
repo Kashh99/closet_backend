@@ -1,52 +1,44 @@
 const mongoose = require('mongoose');
 
 const bookingSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
   listing: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Listing',
-    required: true,
-  },
-  renter: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
-  },
-  owner: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
+    required: true
   },
   startDate: {
     type: Date,
-    required: [true, 'Start date is required'],
+    required: true
   },
   endDate: {
     type: Date,
-    required: [true, 'End date is required'],
+    required: true
   },
-  totalPrice: {
+  totalAmount: {
     type: Number,
-    required: [true, 'Total price is required'],
+    required: true
   },
   status: {
     type: String,
-    required: true,
-    enum: ['Requested', 'Approved', 'Rejected', 'Completed', 'Cancelled'],
-    default: 'Requested',
+    enum: ['pending', 'confirmed', 'cancelled', 'completed'],
+    default: 'pending'
   },
   paymentStatus: {
     type: String,
-    enum: ['Pending', 'Paid', 'Refunded'],
-    default: 'Pending',
+    enum: ['pending', 'paid', 'refunded', 'failed'],
+    default: 'pending'
   },
-}, { timestamps: true });
-
-// Validate that endDate is after startDate
-bookingSchema.pre('validate', function(next) {
-  if (this.startDate >= this.endDate) {
-    this.invalidate('endDate', 'End date must be after start date');
+  paymentIntentId: {
+    type: String
+  },
+  stripePaymentId: {
+    type: String
   }
-  next();
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('Booking', bookingSchema);

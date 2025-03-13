@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const errorHandler = require('./middleware/error.middleware');
 
 // Route imports
 const authRoutes = require('./routes/auth.routes');
@@ -10,6 +11,7 @@ const listingRoutes = require('./routes/listing.routes');
 const bookingRoutes = require('./routes/booking.routes');
 const reviewRoutes = require('./routes/review.routes');
 const uploadRoutes = require('./routes/upload.routes');
+const paymentRoutes = require('./routes/payment.routes');
 
 // Initialize app
 const app = express();
@@ -51,6 +53,10 @@ app.use('/api/listings', listingRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/payments', paymentRoutes);
+
+// Error handling middleware
+app.use(errorHandler);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
