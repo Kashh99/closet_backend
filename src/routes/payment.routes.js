@@ -1,106 +1,106 @@
+// This is an example for an Express.js backend
+
 const express = require('express');
-const stripe = require('../config/stripe');
-const { protect } = require('../middleware/auth.middleware');
-const paymentService = require('../services/payment.service');
-const Booking = require('../models/booking.model');
-
 const router = express.Router();
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const { authenticateToken } = require('../middleware/auth');
+const Order = require('../models/Order'); // Adjust based on your models
 
-// Protect all routes except webhook
-router.use('/webhook', express.raw({ type: 'application/json' }));
-router.use(protect);
-
-// Create payment intent
-router.post('/create-payment-intent', async (req, res) => {
+// Create a payment intent
+router.post('/create-payment-intent', authenticateToken, async (req, res) => {
   try {
-    const { bookingId } = req.body;
-
-    // Verify booking exists and belongs to user
-    const booking = await Booking.findOne({
-      _id: bookingId,
-      user: req.user._id
-    });
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
+    const { amount, currency = 'usd', items } = req.body;
+    
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
     }
-
-    const paymentIntent = await paymentService.createPaymentIntent(
-      booking.totalAmount,
-      bookingId,
-      req.user._id
-    );
-
+    
+    // You might want to validate the items here
+    // For example, fetch them from the database to ensure prices are correct
+    
+    // Create a payment intent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency,
+      metadata: {
+        userId: req.user.id,
+        items: JSON.stringify(items.map(item => ({ id: item.id, quantity: item.quantity })))
+      }
+    });
+    
     res.status(200).json({
-      success: true,
       clientSecret: paymentIntent.client_secret
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error creating payment intent',
-      error: error.message
-    });
+    console.error('Error creating payment intent:', error);
+    res.status(500).json({ error: 'Failed to create payment intent' });
   }
 });
 
-// Get payment status
-router.get('/status/:bookingId', async (req, res) => {
-  try {
-    const booking = await Booking.findOne({
-      _id: req.params.bookingId,
-      user: req.user._id
-    });
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      paymentStatus: booking.paymentStatus,
-      bookingStatus: booking.status
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching payment status',
-      error: error.message
-    });
-  }
-});
-
-// Webhook handler - should be unprotected
-router.post('/webhook', async (req, res) => {
+// Handle webhook events from Stripe
+router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
-
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  
+  let event;
+  
   try {
-    const event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-
-    switch (event.type) {
-      case 'payment_intent.succeeded':
-        await paymentService.handleSuccessfulPayment(event.data.object);
-        break;
-      
-      case 'payment_intent.payment_failed':
-        await paymentService.handleFailedPayment(event.data.object);
-        break;
-    }
-
-    res.json({ received: true });
+    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
   } catch (err) {
-    console.error('Webhook Error:', err.message);
-    res.status(400).send(`Webhook Error: ${err.message}`);
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+  
+  // Handle the event
+  switch (event.type) {
+    case 'payment_intent.succeeded':
+      const paymentIntent = event.data.object;
+      
+      // Create an order record
+      try {
+        const { userId, items } = paymentIntent.metadata;
+        const parsedItems = JSON.parse(items);
+        
+        await Order.create({
+          userId,
+          paymentId: paymentIntent.id,
+          amount: paymentIntent.amount / 100,
+          items: parsedItems,
+          status: 'paid',
+          paymentDate: new Date()
+        });
+        
+        // Update inventory, send confirmation emails, etc.
+        
+      } catch (error) {
+        console.error('Error processing successful payment:', error);
+      }
+      
+      break;
+      
+    case 'payment_intent.payment_failed':
+      const failedPayment = event.data.object;
+      console.log('Payment failed:', failedPayment.id);
+      // Handle failed payment
+      break;
+      
+    default:
+      console.log(`Unhandled event type ${event.type}`);
+  }
+  
+  res.status(200).json({ received: true });
+});
+
+// Get payment history for a user
+router.get('/history', authenticateToken, async (req, res) => {
+  try {
+    const orders = await Order.find({ userId: req.user.id })
+      .sort({ paymentDate: -1 });
+    
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error('Error fetching payment history:', error);
+    res.status(500).json({ error: 'Failed to fetch payment history' });
   }
 });
 
