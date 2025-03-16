@@ -3,7 +3,8 @@
 const express = require('express');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { authenticateToken } = require('../middleware/auth');
+const { protect } = require('../middleware/auth.middleware');
+const { authenticateToken } = require('../middleware/auth.middleware'); // Adjust based on your auth setup
 const Order = require('../models/Order'); // Adjust based on your models
 
 // Create a payment intent
