@@ -4,30 +4,48 @@ const express = require('express');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { protect } = require('../middleware/auth.middleware');
-const { authenticateToken } = require('../middleware/auth.middleware'); // Adjust based on your auth setup
-const Order = require('../models/Order'); // Adjust based on your models
+const { authenticateToken } = require('../middleware/auth.middleware'); // This line is redundant - you don't need both protect and authenticateToken
+const Booking = require('../models/booking.model');
 
 // Create a payment intent
-router.post('/create-payment-intent', authenticateToken, async (req, res) => {
+router.post('/create-payment-intent', protect, async (req, res) => {
   try {
-    const { amount, currency = 'usd', items } = req.body;
+    const { bookingId } = req.body;
     
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: 'Invalid amount' });
+    if (!bookingId) {
+      return res.status(400).json({ error: 'Booking ID is required' });
     }
     
-    // You might want to validate the items here
-    // For example, fetch them from the database to ensure prices are correct
+    // Get the booking
+    const booking = await Booking.findById(bookingId);
+    
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    
+    // Make sure the user is the renter
+    if (booking.user.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Make sure the booking hasn't been paid for yet
+    if (booking.paymentStatus === 'paid') {
+      return res.status(400).json({ error: 'Booking has already been paid for' });
+    }
     
     // Create a payment intent
     const paymentIntent = await stripe.paymentIntents.create({
-      amount,
-      currency,
+      amount: Math.round(booking.totalAmount * 100), // Convert to cents
+      currency: 'usd',
       metadata: {
-        userId: req.user.id,
-        items: JSON.stringify(items.map(item => ({ id: item.id, quantity: item.quantity })))
+        bookingId: booking._id.toString(),
+        userId: req.user.id
       }
     });
+    
+    // Update the booking with the payment intent ID
+    booking.paymentIntentId = paymentIntent.id;
+    await booking.save();
     
     res.status(200).json({
       clientSecret: paymentIntent.client_secret
@@ -57,21 +75,22 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     case 'payment_intent.succeeded':
       const paymentIntent = event.data.object;
       
-      // Create an order record
+      // Update the booking record
       try {
-        const { userId, items } = paymentIntent.metadata;
-        const parsedItems = JSON.parse(items);
+        const { bookingId } = paymentIntent.metadata;
         
-        await Order.create({
-          userId,
-          paymentId: paymentIntent.id,
-          amount: paymentIntent.amount / 100,
-          items: parsedItems,
-          status: 'paid',
-          paymentDate: new Date()
-        });
+        const booking = await Booking.findById(bookingId);
+        if (!booking) {
+          console.error('Booking not found:', bookingId);
+          return res.status(404).json({ error: 'Booking not found' });
+        }
         
-        // Update inventory, send confirmation emails, etc.
+        booking.paymentStatus = 'paid';
+        booking.stripePaymentId = paymentIntent.id;
+        booking.status = 'confirmed';
+        await booking.save();
+        
+        // Here you could send confirmation emails, etc.
         
       } catch (error) {
         console.error('Error processing successful payment:', error);
@@ -81,8 +100,17 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
       
     case 'payment_intent.payment_failed':
       const failedPayment = event.data.object;
-      console.log('Payment failed:', failedPayment.id);
-      // Handle failed payment
+      try {
+        const { bookingId } = failedPayment.metadata;
+        
+        const booking = await Booking.findById(bookingId);
+        if (booking) {
+          booking.paymentStatus = 'failed';
+          await booking.save();
+        }
+      } catch (error) {
+        console.error('Error processing failed payment:', error);
+      }
       break;
       
     default:
@@ -93,12 +121,15 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 });
 
 // Get payment history for a user
-router.get('/history', authenticateToken, async (req, res) => {
+router.get('/history', protect, async (req, res) => {
   try {
-    const orders = await Order.find({ userId: req.user.id })
-      .sort({ paymentDate: -1 });
+    const bookings = await Booking.find({ 
+      user: req.user.id,
+      paymentStatus: { $in: ['paid', 'refunded'] }
+    })
+    .sort({ createdAt: -1 });
     
-    res.status(200).json(orders);
+    res.status(200).json(bookings);
   } catch (error) {
     console.error('Error fetching payment history:', error);
     res.status(500).json({ error: 'Failed to fetch payment history' });

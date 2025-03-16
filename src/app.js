@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const errorHandler = require('./middleware/error.middleware');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Route imports
 const authRoutes = require('./routes/auth.routes');
@@ -41,7 +42,8 @@ app.get('/', (req, res) => {
       listings: '/api/listings',
       bookings: '/api/bookings',
       reviews: '/api/reviews',
-      upload: '/api/upload'
+      upload: '/api/upload',
+      payments: '/api/payments'
     }
   });
 });
@@ -54,6 +56,41 @@ app.use('/api/bookings', bookingRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/payments', paymentRoutes);
+
+// Stripe Webhook Endpoint
+app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.log(`⚠️  Webhook signature verification failed: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle Stripe events
+  switch (event.type) {
+    case 'payment_intent.succeeded':
+      const paymentIntent = event.data.object;
+      console.log(`✅ PaymentIntent succeeded: ${paymentIntent.id}`);
+      // TODO: Handle successful payment logic
+      break;
+
+    case 'payment_intent.payment_failed':
+      const failedIntent = event.data.object;
+      console.log(`❌ PaymentIntent failed: ${failedIntent.id}`);
+      // TODO: Handle failed payment logic
+      break;
+
+    default:
+      console.log(`⚠️ Unhandled event type: ${event.type}`);
+  }
+
+  // Return acknowledgment
+  res.json({ received: true });
+});
 
 // Error handling middleware
 app.use(errorHandler);
